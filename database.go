@@ -113,8 +113,6 @@ func NewReverseProxy(config *Config, db *sql.DB) *httputil.ReverseProxy {
 		base: http.DefaultTransport,
 	}
 
-	var reqBody []byte
-
 	proxy.Director = func(req *http.Request) {
 		log.Printf("Incoming request: %s %s", req.Method, req.URL.String())
 
@@ -169,13 +167,13 @@ func NewReverseProxy(config *Config, db *sql.DB) *httputil.ReverseProxy {
 		*req = *req.WithContext(ctx)
 
 		if req.Body != nil {
-			var err error
-			reqBody, err = io.ReadAll(req.Body)
+			reqBody, err := io.ReadAll(req.Body)
 			if err != nil {
 				log.Printf("Error reading request body: %v", err)
 			}
 			req.Body = io.NopCloser(bytes.NewBuffer(reqBody))
 			log.Printf("Request body length: %d", len(reqBody))
+			ctx = context.WithValue(ctx, "request_body", reqBody)
 		}
 
 		log.Printf("Final request URL: %s", req.URL.String())
@@ -205,7 +203,10 @@ func NewReverseProxy(config *Config, db *sql.DB) *httputil.ReverseProxy {
 			res.Body = io.NopCloser(bytes.NewBuffer(resBody))
 			log.Printf("Response body length: %d", len(resBody))
 		}
-
+		reqBody := ""
+		if body, ok := res.Request.Context().Value("request_body").([]byte); ok {
+			reqBody = string(body)
+		}
 		LogRequest(db, res.Request, res, elapsed, string(reqBody), string(resBody))
 		return nil
 	}
