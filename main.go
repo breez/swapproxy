@@ -24,9 +24,18 @@ func main() {
 	defer db.Close()
 	log.Printf("Database initialized successfully")
 
+	// Set up HTTP reverse proxy
 	proxy := NewReverseProxy(config, db)
 	log.Printf("Reverse proxy created")
 
+	// Set up WebSocket proxy
+	wsProxy := NewWebSocketProxy(config.BackendURL.String())
+	wsProxy.Start()
+	http.HandleFunc("/ws", wsProxy.HandleWebSocket)
+
+	// Set up HTTP handler
+	http.Handle("/", proxy)
+
 	log.Printf("Starting to listen on port %s", config.Port)
-	log.Fatal(http.ListenAndServe(":"+config.Port, proxy))
+	log.Fatal(http.ListenAndServe(":"+config.Port, nil))
 }
