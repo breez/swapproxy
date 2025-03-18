@@ -222,7 +222,51 @@ func (p *WebSocketProxy) Start() {
 			_, message, err := p.upstream.Read(context.Background())
 			if err != nil {
 				log.Printf("Upstream WebSocket read error: %v", err)
-				break
+
+				// Attempt to reconnect to the upstream server
+				for {
+					log.Println("Attempting to reconnect to upstream server...")
+					err := p.connectToUpstream()
+					if err == nil {
+						log.Println("Reconnected to upstream server successfully")
+
+						// Resubscribe to all swap IDs after reconnection
+						p.mu.Lock()
+						swapIDs := make([]string, 0, len(p.subscribers))
+						for swapID := range p.subscribers {
+							swapIDs = append(swapIDs, swapID)
+						}
+						p.mu.Unlock()
+
+						if len(swapIDs) > 0 {
+							resubscribeMsg := map[string]any{
+								"op":      "subscribe",
+								"channel": "swap.update",
+								"args":    swapIDs,
+							}
+							messageBytes, err := json.Marshal(resubscribeMsg)
+							if err != nil {
+								log.Printf("Failed to marshal resubscribe message: %v", err)
+							} else {
+								err = p.upstream.Write(context.Background(), websocket.MessageText, messageBytes)
+								if err != nil {
+									log.Printf("Failed to forward resubscribe message to upstream: %v", err)
+								} else {
+									log.Printf("Resubscribed to swap IDs: %v", swapIDs)
+								}
+							}
+						}
+
+						break
+					}
+					log.Printf("Failed to reconnect to upstream server: %v", err)
+
+					// Wait before retrying
+					time.Sleep(5 * time.Second)
+				}
+
+				// Continue the loop to resume processing messages
+				continue
 			}
 
 			// Parse the message
