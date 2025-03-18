@@ -131,8 +131,6 @@ func (p *WebSocketProxy) handleSubscribe(conn *websocket.Conn, msg map[string]an
 	}
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	for _, swapID := range swapIDs {
 		id, ok := swapID.(string)
 		if !ok {
@@ -149,6 +147,7 @@ func (p *WebSocketProxy) handleSubscribe(conn *websocket.Conn, msg map[string]an
 		// Add swap ID to client's subscriptions
 		p.clients[conn][id] = true
 	}
+	p.mu.Unlock() // Release the lock after modifying the maps
 
 	// Forward subscribe message to upstream
 	if p.upstream != nil {
@@ -175,8 +174,6 @@ func (p *WebSocketProxy) handleUnsubscribe(conn *websocket.Conn, msg map[string]
 	}
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	for _, swapID := range swapIDs {
 		id, ok := swapID.(string)
 		if !ok {
@@ -193,6 +190,7 @@ func (p *WebSocketProxy) handleUnsubscribe(conn *websocket.Conn, msg map[string]
 		// Remove swap ID from client's subscriptions
 		delete(p.clients[conn], id)
 	}
+	p.mu.Unlock() // Release the lock after modifying the maps
 
 	// Forward unsubscribe message to upstream
 	if p.upstream != nil {
@@ -241,7 +239,8 @@ func (p *WebSocketProxy) Start() {
 				continue
 			}
 
-			// Broadcast message to clients subscribed to the swap IDs
+			// Collect clients to notify
+			clientsToNotify := make(map[*websocket.Conn][]byte)
 			p.mu.Lock()
 			for _, arg := range args {
 				swap, ok := arg.(map[string]any)
@@ -253,25 +252,37 @@ func (p *WebSocketProxy) Start() {
 					continue
 				}
 
-				for client := range p.subscribers[swapID] {
-					// Marshal the message into JSON ([]byte)
-					messageBytes, err := json.Marshal(msg)
-					if err != nil {
-						log.Printf("Failed to marshal message for client: %v", err)
-						continue
-					}
+				// Marshal the message into JSON ([]byte)
+				messageBytes, err := json.Marshal(msg)
+				if err != nil {
+					log.Printf("Failed to marshal message for client: %v", err)
+					continue
+				}
 
-					// Write the message to the client WebSocket
-					err = client.Write(context.Background(), websocket.MessageText, messageBytes)
-					if err != nil {
-						log.Printf("Failed to send message to client: %v", err)
-						client.CloseNow()
-						delete(p.clients, client)
-						delete(p.subscribers[swapID], client)
-					}
+				// Add clients to notify
+				for client := range p.subscribers[swapID] {
+					clientsToNotify[client] = messageBytes
 				}
 			}
-			p.mu.Unlock()
+			p.mu.Unlock() // Release the lock after collecting clients to notify
+
+			// Notify clients
+			for client, messageBytes := range clientsToNotify {
+				err := client.Write(context.Background(), websocket.MessageText, messageBytes)
+				if err != nil {
+					log.Printf("Failed to send message to client: %v", err)
+					client.CloseNow()
+					p.mu.Lock()
+					delete(p.clients, client)
+					for swapID := range p.subscribers {
+						delete(p.subscribers[swapID], client)
+						if len(p.subscribers[swapID]) == 0 {
+							delete(p.subscribers, swapID)
+						}
+					}
+					p.mu.Unlock()
+				}
+			}
 		}
 	}()
 }
