@@ -75,7 +75,12 @@ func (p *WebSocketProxy) HandleWebSocket(w http.ResponseWriter, r *http.Request)
 						log.Printf("Failed to marshal unsubscribe message: %v", err)
 						continue
 					}
+
+					// Release the lock before writing to the upstream WebSocket
+					p.mu.Unlock()
 					err = p.upstream.Write(context.Background(), websocket.MessageText, messageBytes)
+					p.mu.Lock() // Reacquire the lock after writing
+
 					if err != nil {
 						log.Printf("Failed to forward unsubscribe message to upstream: %v", err)
 					}
