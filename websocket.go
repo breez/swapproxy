@@ -106,12 +106,26 @@ func (p *WebSocketProxy) HandleWebSocket(w http.ResponseWriter, r *http.Request)
 			continue
 		}
 
-		// Handle subscription/unsubscription
+		// Handle operation
 		switch msg["op"] {
 		case "subscribe":
 			p.handleSubscribe(conn, msg)
 		case "unsubscribe":
 			p.handleUnsubscribe(conn, msg)
+		case "ping":
+			// Respond with a pong message
+			pongMsg := map[string]any{
+				"event": "pong",
+			}
+			messageBytes, err := json.Marshal(pongMsg)
+			if err != nil {
+				log.Printf("Failed to marshal pong message: %v", err)
+				continue
+			}
+			err = conn.Write(context.Background(), websocket.MessageText, messageBytes)
+			if err != nil {
+				log.Printf("Failed to send pong message to client: %v", err)
+			}
 		default:
 			log.Printf("Unknown operation: %s", msg["op"])
 		}
