@@ -283,8 +283,8 @@ func (p *WebSocketProxy) Start() {
 				continue
 			}
 
-			// Collect clients to notify
-			clientsToNotify := make(map[*websocket.Conn][]byte)
+			// Group updates by client
+			clientUpdates := make(map[*websocket.Conn][]map[string]any)
 			p.mu.Lock()
 			for _, arg := range args {
 				swap, ok := arg.(map[string]any)
@@ -296,23 +296,31 @@ func (p *WebSocketProxy) Start() {
 					continue
 				}
 
+				// Add updates to each subscribed client
+				for client := range p.subscribers[swapID] {
+					clientUpdates[client] = append(clientUpdates[client], swap)
+				}
+			}
+			p.mu.Unlock() // Release the lock after grouping updates
+
+			// Notify clients
+			for client, updates := range clientUpdates {
+				// Create a single notification message for the client
+				notification := map[string]any{
+					"event":   msg["event"],
+					"channel": msg["channel"],
+					"args":    updates,
+				}
+
 				// Marshal the message into JSON ([]byte)
-				messageBytes, err := json.Marshal(msg)
+				messageBytes, err := json.Marshal(notification)
 				if err != nil {
-					log.Printf("Failed to marshal message for client: %v", err)
+					log.Printf("Failed to marshal notification for client: %v", err)
 					continue
 				}
 
-				// Add clients to notify
-				for client := range p.subscribers[swapID] {
-					clientsToNotify[client] = messageBytes
-				}
-			}
-			p.mu.Unlock() // Release the lock after collecting clients to notify
-
-			// Notify clients
-			for client, messageBytes := range clientsToNotify {
-				err := client.Write(context.Background(), websocket.MessageText, messageBytes)
+				// Write the message to the client WebSocket
+				err = client.Write(context.Background(), websocket.MessageText, messageBytes)
 				if err != nil {
 					log.Printf("Failed to send message to client: %v", err)
 					client.CloseNow()
