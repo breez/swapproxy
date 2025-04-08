@@ -36,7 +36,7 @@ func LoadConfig() (*Config, error) {
 
 	webSocketBackendURLStr := os.Getenv("WEBSOCKET_BACKEND_URL")
 	if backendURLStr == "" {
-		backendURLStr = "http://localhost:8081"
+		webSocketBackendURLStr = "ws://localhost:8081"
 	}
 	webSocketBackendURL, err := url.Parse(webSocketBackendURLStr)
 	if err != nil {
