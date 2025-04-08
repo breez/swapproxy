@@ -2,7 +2,7 @@ package main
 
 import (
 	"crypto/x509"
-	"encoding/pem"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"net/url"
@@ -48,12 +48,12 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("CA_CERT environment variable is required")
 	}
 
-	block, _ := pem.Decode([]byte(caCertPEM))
-	if block == nil {
-		return nil, fmt.Errorf("failed to parse PEM block containing CA certificate")
+	block, err := base64.StdEncoding.DecodeString(caCertPEM)
+	if err != nil {
+		return nil, fmt.Errorf("Could not decode certificate base64 body: %w", err)
 	}
 
-	caCert, err := x509.ParseCertificate(block.Bytes)
+	caCert, err := x509.ParseCertificate(block)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse CA certificate: %w", err)
 	}
