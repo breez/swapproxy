@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,13 +18,15 @@ type WebSocketProxy struct {
 	subscribers map[string]map[*websocket.Conn]bool // Tracks clients for each swap ID
 	mu          sync.Mutex
 	upstream    *websocket.Conn
+	config      *Config
 }
 
-func NewWebSocketProxy(upstreamURL string) *WebSocketProxy {
+func NewWebSocketProxy(upstreamURL string, config *Config) *WebSocketProxy {
 	return &WebSocketProxy{
 		upstreamURL: upstreamURL,
 		clients:     make(map[*websocket.Conn]map[string]bool),
 		subscribers: make(map[string]map[*websocket.Conn]bool),
+		config:      config,
 	}
 }
 
@@ -43,6 +46,26 @@ func (p *WebSocketProxy) HandleWebSocket(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	defer conn.CloseNow()
+
+	authHeader := r.Header.Get("Authorization")
+	apiKey := ""
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		apiKey = strings.TrimPrefix(authHeader, "Bearer ")
+		log.Printf("Extracted API key (length): %d", len(apiKey))
+	}
+
+	if apiKey == "" || !validateAPIKey(p.config.CACert, apiKey) {
+		log.Printf("WebSocket connection rejected: invalid API key")
+		// Send error message and close connection
+		errMsg := map[string]any{
+			"event": "error",
+			"error": "invalid API key",
+		}
+		messageBytes, _ := json.Marshal(errMsg)
+		conn.Write(context.Background(), websocket.MessageText, messageBytes)
+		conn.CloseNow()
+		return
+	}
 
 	// Set a read timeout (e.g., 30 seconds)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
