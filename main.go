@@ -29,7 +29,7 @@ func main() {
 	log.Printf("Reverse proxy created")
 
 	// Set up WebSocket proxy
-	wsProxy := NewWebSocketProxy(config.BackendURL.String())
+	wsProxy := NewWebSocketProxy(config.WebSocketBackendURL.String())
 	wsProxy.Start()
 	http.HandleFunc("/ws", wsProxy.HandleWebSocket)
 

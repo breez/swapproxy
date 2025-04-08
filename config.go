@@ -12,10 +12,11 @@ import (
 )
 
 type Config struct {
-	BackendURL *url.URL
-	Port       string
-	DBPath     string
-	CACert     *x509.Certificate
+	BackendURL          *url.URL
+	WebSocketBackendURL *url.URL
+	Port                string
+	DBPath              string
+	CACert              *x509.Certificate
 }
 
 func LoadConfig() (*Config, error) {
@@ -29,6 +30,15 @@ func LoadConfig() (*Config, error) {
 		backendURLStr = "http://localhost:8081"
 	}
 	backendURL, err := url.Parse(backendURLStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid BACKEND_URL: %w", err)
+	}
+
+	webSocketBackendURLStr := os.Getenv("WEBSOCKET_BACKEND_URL")
+	if backendURLStr == "" {
+		backendURLStr = "http://localhost:8081"
+	}
+	webSocketBackendURL, err := url.Parse(webSocketBackendURLStr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid BACKEND_URL: %w", err)
 	}
@@ -59,9 +69,10 @@ func LoadConfig() (*Config, error) {
 	}
 
 	return &Config{
-		BackendURL: backendURL,
-		Port:       port,
-		DBPath:     dbPath,
-		CACert:     caCert,
+		BackendURL:          backendURL,
+		WebSocketBackendURL: webSocketBackendURL,
+		Port:                port,
+		DBPath:              dbPath,
+		CACert:              caCert,
 	}, nil
 }
