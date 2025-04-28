@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/url"
@@ -17,6 +18,7 @@ type Config struct {
 	Port                string
 	DBPath              string
 	CACert              *x509.Certificate
+	AdditionalParams    [][2]string
 }
 
 func LoadConfig() (*Config, error) {
@@ -68,11 +70,21 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("failed to parse CA certificate: %w", err)
 	}
 
+	additionalParamsStr := os.Getenv("ADDITIONAL_PARAMETERS")
+	var additionalParams [][2]string
+	if additionalParamsStr != "" {
+		err := json.Unmarshal([]byte(additionalParamsStr), &additionalParams)
+		if err != nil {
+			return nil, fmt.Errorf("invalid ADDITIONAL_PARAMETERS format: %w", err)
+		}
+	}
+
 	return &Config{
 		BackendURL:          backendURL,
 		WebSocketBackendURL: webSocketBackendURL,
 		Port:                port,
 		DBPath:              dbPath,
 		CACert:              caCert,
+		AdditionalParams:    additionalParams,
 	}, nil
 }

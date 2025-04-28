@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -22,8 +23,23 @@ type WebSocketProxy struct {
 }
 
 func NewWebSocketProxy(upstreamURL string, config *Config) *WebSocketProxy {
+	// Parse the URL to add additional parameters
+	wsURL, err := url.Parse(upstreamURL)
+	if err != nil {
+		log.Fatalf("Invalid WebSocket URL: %v", err)
+	}
+
+	// Add additional parameters to the WebSocket URL
+	query := wsURL.Query()
+	for _, param := range config.AdditionalParams {
+		if len(param) == 2 {
+			query.Add(param[0], param[1])
+		}
+	}
+	wsURL.RawQuery = query.Encode()
+
 	return &WebSocketProxy{
-		upstreamURL: upstreamURL,
+		upstreamURL: wsURL.String(),
 		clients:     make(map[*websocket.Conn]map[string]bool),
 		subscribers: make(map[string]map[*websocket.Conn]bool),
 		config:      config,

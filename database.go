@@ -121,8 +121,14 @@ func NewReverseProxy(config *Config, db *sql.DB) *httputil.ReverseProxy {
 
 		// Store original values
 		originalPath := req.URL.Path
-		originalQuery := req.URL.RawQuery
+		originalQuery := req.URL.Query()
 		log.Printf("Original path: %s, query: %s", originalPath, originalQuery)
+
+		for _, param := range config.AdditionalParams {
+			if len(param) == 2 {
+				originalQuery.Add(param[0], param[1])
+			}
+		}
 
 		// Always set up the URL properly, regardless of authentication
 		newURL, err := url.Parse(config.BackendURL.String())
@@ -133,7 +139,7 @@ func NewReverseProxy(config *Config, db *sql.DB) *httputil.ReverseProxy {
 
 		// Set the path and query
 		newURL.Path = path.Join(newURL.Path, originalPath)
-		newURL.RawQuery = originalQuery
+		newURL.RawQuery = originalQuery.Encode()
 
 		// Update the request URL
 		req.URL = newURL
