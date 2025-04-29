@@ -31,7 +31,7 @@ func NewWebSocketProxy(upstreamURL string, config *Config) *WebSocketProxy {
 
 	// Add additional parameters to the WebSocket URL
 	query := wsURL.Query()
-	for _, param := range config.AdditionalParams {
+	for _, param := range config.WebSocketAdditionalParams {
 		if len(param) == 2 {
 			query.Add(param[0], param[1])
 		}

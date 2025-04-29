@@ -124,7 +124,7 @@ func NewReverseProxy(config *Config, db *sql.DB) *httputil.ReverseProxy {
 		originalQuery := req.URL.Query()
 		log.Printf("Original path: %s, query: %s", originalPath, originalQuery)
 
-		for _, param := range config.AdditionalParams {
+		for _, param := range config.HTTPAdditionalParams {
 			if len(param) == 2 {
 				originalQuery.Add(param[0], param[1])
 			}

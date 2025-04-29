@@ -13,12 +13,13 @@ import (
 )
 
 type Config struct {
-	BackendURL          *url.URL
-	WebSocketBackendURL *url.URL
-	Port                string
-	DBPath              string
-	CACert              *x509.Certificate
-	AdditionalParams    [][2]string
+	BackendURL                *url.URL
+	WebSocketBackendURL       *url.URL
+	Port                      string
+	DBPath                    string
+	CACert                    *x509.Certificate
+	HTTPAdditionalParams      [][2]string
+	WebSocketAdditionalParams [][2]string
 }
 
 func LoadConfig() (*Config, error) {
@@ -70,21 +71,31 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("failed to parse CA certificate: %w", err)
 	}
 
-	additionalParamsStr := os.Getenv("ADDITIONAL_PARAMETERS")
-	var additionalParams [][2]string
-	if additionalParamsStr != "" {
-		err := json.Unmarshal([]byte(additionalParamsStr), &additionalParams)
+	httpAdditionalParamsStr := os.Getenv("HTTP_ADDITIONAL_PARAMETERS")
+	var httpAdditionalParams [][2]string
+	if httpAdditionalParamsStr != "" {
+		err := json.Unmarshal([]byte(httpAdditionalParamsStr), &httpAdditionalParams)
 		if err != nil {
-			return nil, fmt.Errorf("invalid ADDITIONAL_PARAMETERS format: %w", err)
+			return nil, fmt.Errorf("invalid HTTP_ADDITIONAL_PARAMETERS format: %w", err)
+		}
+	}
+
+	websocketAdditionalParamsStr := os.Getenv("WEBSOCKET_ADDITIONAL_PARAMETERS")
+	var websocketAdditionalParams [][2]string
+	if websocketAdditionalParamsStr != "" {
+		err := json.Unmarshal([]byte(websocketAdditionalParamsStr), &websocketAdditionalParams)
+		if err != nil {
+			return nil, fmt.Errorf("invalid WEBSOCKET_ADDITIONAL_PARAMETERS format: %w", err)
 		}
 	}
 
 	return &Config{
-		BackendURL:          backendURL,
-		WebSocketBackendURL: webSocketBackendURL,
-		Port:                port,
-		DBPath:              dbPath,
-		CACert:              caCert,
-		AdditionalParams:    additionalParams,
+		BackendURL:                backendURL,
+		WebSocketBackendURL:       webSocketBackendURL,
+		Port:                      port,
+		DBPath:                    dbPath,
+		CACert:                    caCert,
+		HTTPAdditionalParams:      httpAdditionalParams,
+		WebSocketAdditionalParams: websocketAdditionalParams,
 	}, nil
 }
