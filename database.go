@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -100,6 +101,58 @@ func validateAPIKey(cert *x509.Certificate, apiKeyStr string) bool {
 	return true
 }
 
+func addRequestExtraFees(body []byte) ([]byte, error) {
+	var jsonBody map[string]interface{}
+	if err := json.Unmarshal(body, &jsonBody); err != nil {
+		return nil, fmt.Errorf("error unmarshaling JSON: %w", err)
+	}
+
+	jsonBody["extraFees"] = map[string]interface{}{
+		"id":         "gm",
+		"percentage": 10,
+	}
+
+	modifiedBody, err := json.Marshal(jsonBody)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling JSON: %w", err)
+	}
+
+	return modifiedBody, nil
+}
+
+func modifyResponsePercentages(data interface{}) interface{} {
+	// The response is a map of currency pairs
+	currencyMap, ok := data.(map[string]interface{})
+	if !ok {
+		return data
+	}
+
+	// Iterate through each currency pair
+	for _, pairData := range currencyMap {
+		pairMap, ok := pairData.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// Each pair has another map of currency data
+		for _, currencyData := range pairMap {
+			currencyMap, ok := currencyData.(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			// Check for fees.percentage
+			if fees, ok := currencyMap["fees"].(map[string]interface{}); ok {
+				if percentage, ok := fees["percentage"].(float64); ok {
+					fees["percentage"] = percentage + 10
+				}
+			}
+		}
+	}
+
+	return data
+}
+
 func NewReverseProxy(config *Config, db *sql.DB) *httputil.ReverseProxy {
 	log.Printf("Initializing reverse proxy with backend URL: %s (scheme: %s, host: %s)",
 		config.BackendURL.String(),
@@ -123,6 +176,28 @@ func NewReverseProxy(config *Config, db *sql.DB) *httputil.ReverseProxy {
 		originalPath := req.URL.Path
 		originalQuery := req.URL.Query()
 		log.Printf("Original path: %s, query: %s", originalPath, originalQuery)
+
+		// Check if this is a request we need to modify
+		if req.Method == "POST" {
+			switch originalPath {
+			case "/v2/swap/submarine", "/v2/swap/reverse", "/v2/swap/chain":
+				if req.Body != nil {
+					reqBody, err := io.ReadAll(req.Body)
+					if err != nil {
+						log.Printf("Error reading request body: %v", err)
+					} else {
+						modifiedBody, err := addRequestExtraFees(reqBody)
+						if err != nil {
+							log.Printf("Error modifying request body: %v", err)
+						} else {
+							req.Body = io.NopCloser(bytes.NewBuffer(modifiedBody))
+							req.ContentLength = int64(len(modifiedBody))
+							log.Printf("Modified request body for %s", originalPath)
+						}
+					}
+				}
+			}
+		}
 
 		for _, param := range config.HTTPAdditionalParams {
 			if len(param) == 2 {
@@ -207,10 +282,42 @@ func NewReverseProxy(config *Config, db *sql.DB) *httputil.ReverseProxy {
 
 		var resBody []byte
 		if res.Body != nil {
-			resBody, _ = io.ReadAll(res.Body)
-			res.Body = io.NopCloser(bytes.NewBuffer(resBody))
-			log.Printf("Response body length: %d", len(resBody))
+			var err error
+			resBody, err = io.ReadAll(res.Body)
+			if err != nil {
+				log.Printf("Error reading response body: %v", err)
+				return err
+			}
+			res.Body.Close() // Close the original body
+
+			// Check if this is a GET request to one of our target endpoints
+			if res.Request.Method == "GET" {
+				switch res.Request.URL.Path {
+				case "/v2/swap/submarine", "/v2/swap/reverse", "/v2/swap/chain":
+					var jsonBody interface{}
+					if err := json.Unmarshal(resBody, &jsonBody); err != nil {
+						log.Printf("Error unmarshaling response JSON: %v", err)
+					} else {
+						modifiedBody := modifyResponsePercentages(jsonBody)
+						modifiedJSON, err := json.Marshal(modifiedBody)
+						if err != nil {
+							log.Printf("Error marshaling modified response JSON: %v", err)
+						} else {
+							resBody = modifiedJSON
+							log.Printf("Modified percentage values in response for %s", res.Request.URL.Path)
+						}
+					}
+				}
+			}
+
+			// Create a new buffer and set it as the response body
+			buf := bytes.NewBuffer(resBody)
+			res.Body = io.NopCloser(buf)
+			res.ContentLength = int64(buf.Len())
+			res.Header.Set("Content-Length", fmt.Sprintf("%d", buf.Len()))
+			log.Printf("Response body length: %d", buf.Len())
 		}
+
 		reqBody := ""
 		if body, ok := res.Request.Context().Value("request_body").([]byte); ok {
 			reqBody = string(body)
