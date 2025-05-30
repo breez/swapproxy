@@ -81,18 +81,18 @@ func (p *WebSocketProxy) HandleWebSocket(w http.ResponseWriter, r *http.Request)
 	}
 
 	if p.config.CACert != nil {
-	if apiKey == "" || !validateAPIKey(p.config.CACert, apiKey) {
-		log.Printf("WebSocket connection rejected: invalid API key")
-		// Send error message and close connection
-		errMsg := map[string]any{
-			"event": "error",
-			"error": "invalid API key",
+		if apiKey == "" || !validateAPIKey(p.config.CACert, apiKey) {
+			log.Printf("WebSocket connection rejected: invalid API key")
+			// Send error message and close connection
+			errMsg := map[string]any{
+				"event": "error",
+				"error": "invalid API key",
+			}
+			messageBytes, _ := json.Marshal(errMsg)
+			conn.Write(context.Background(), websocket.MessageText, messageBytes)
+			conn.CloseNow()
+			return
 		}
-		messageBytes, _ := json.Marshal(errMsg)
-		conn.Write(context.Background(), websocket.MessageText, messageBytes)
-		conn.CloseNow()
-		return
-	}
 	}
 
 	// Set a read timeout (e.g., 30 seconds)
@@ -499,9 +499,10 @@ func (p *WebSocketProxy) Start() {
 			for client, updates := range clientUpdates {
 				// Create a single notification message for the client
 				notification := map[string]any{
-					"event":   msg["event"],
-					"channel": msg["channel"],
-					"args":    updates,
+					"event":     msg["event"],
+					"channel":   msg["channel"],
+					"args":      updates,
+					"timestamp": strconv.FormatInt(time.Now().Unix(), 10),
 				}
 
 				// Marshal the message into JSON ([]byte)
