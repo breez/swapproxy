@@ -80,6 +80,7 @@ func (p *WebSocketProxy) HandleWebSocket(w http.ResponseWriter, r *http.Request)
 		log.Printf("Extracted API key (length): %d", len(apiKey))
 	}
 
+	if p.config.CACert != nil {
 	if apiKey == "" || !validateAPIKey(p.config.CACert, apiKey) {
 		log.Printf("WebSocket connection rejected: invalid API key")
 		// Send error message and close connection
@@ -91,6 +92,7 @@ func (p *WebSocketProxy) HandleWebSocket(w http.ResponseWriter, r *http.Request)
 		conn.Write(context.Background(), websocket.MessageText, messageBytes)
 		conn.CloseNow()
 		return
+	}
 	}
 
 	// Set a read timeout (e.g., 30 seconds)
