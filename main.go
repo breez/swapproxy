@@ -31,7 +31,7 @@ func main() {
 	// Set up WebSocket proxy
 	wsProxy := NewWebSocketProxy(config.WebSocketBackendURL.String(), config)
 	wsProxy.Start()
-	http.HandleFunc("/ws", wsProxy.HandleWebSocket)
+	http.HandleFunc("/v2/ws", wsProxy.HandleWebSocket)
 
 	// Set up HTTP handler
 	http.Handle("/", proxy)
