@@ -3,23 +3,32 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
+	"golang.org/x/exp/maps"
 )
 
+type Subscription struct {
+	channel string
+	arg     any
+}
+
 type WebSocketProxy struct {
-	upstreamURL string
-	clients     map[*websocket.Conn]map[string]bool // Tracks swap IDs for each client
-	subscribers map[string]map[*websocket.Conn]bool // Tracks clients for each swap ID
-	mu          sync.Mutex
-	upstream    *websocket.Conn
-	config      *Config
+	upstreamURL   string
+	clients       map[*websocket.Conn]map[string]bool // Tracks ids for each client
+	subscribers   map[string]map[*websocket.Conn]bool // Tracks clients for each id
+	subscriptions map[string]*Subscription            // Store subscription data
+	mu            sync.Mutex
+	upstream      *websocket.Conn
+	config        *Config
 }
 
 func NewWebSocketProxy(upstreamURL string, config *Config) *WebSocketProxy {
@@ -39,10 +48,11 @@ func NewWebSocketProxy(upstreamURL string, config *Config) *WebSocketProxy {
 	wsURL.RawQuery = query.Encode()
 
 	return &WebSocketProxy{
-		upstreamURL: wsURL.String(),
-		clients:     make(map[*websocket.Conn]map[string]bool),
-		subscribers: make(map[string]map[*websocket.Conn]bool),
-		config:      config,
+		upstreamURL:   wsURL.String(),
+		clients:       make(map[*websocket.Conn]map[string]bool),
+		subscribers:   make(map[string]map[*websocket.Conn]bool),
+		subscriptions: make(map[string]*Subscription),
+		config:        config,
 	}
 }
 
@@ -96,34 +106,29 @@ func (p *WebSocketProxy) HandleWebSocket(w http.ResponseWriter, r *http.Request)
 		defer p.mu.Unlock()
 
 		// Remove client from all subscriptions
-		for swapID := range p.clients[conn] {
-			delete(p.subscribers[swapID], conn)
-			if len(p.subscribers[swapID]) == 0 {
-				// If no more clients are subscribed to this swap ID, remove it from the map
-				delete(p.subscribers, swapID)
+		for id := range p.clients[conn] {
+			delete(p.subscribers[id], conn)
+			if len(p.subscribers[id]) == 0 {
+				// If no more clients are subscribed to this id, remove it from the map
+				delete(p.subscribers, id)
 
 				// Optionally, send an unsubscribe message to the upstream server
-				if p.upstream != nil {
+				if p.upstream != nil && p.subscriptions[id] != nil {
+					subscription := p.subscriptions[id]
 					unsubscribeMsg := map[string]any{
 						"op":      "unsubscribe",
-						"channel": "swap.update",
-						"args":    []string{swapID},
+						"channel": subscription.channel,
+						"args":    []string{id},
 					}
-					messageBytes, err := json.Marshal(unsubscribeMsg)
-					if err != nil {
-						log.Printf("Failed to marshal unsubscribe message: %v", err)
-						continue
-					}
-
 					// Release the lock before writing to the upstream WebSocket
 					p.mu.Unlock()
-					err = p.upstream.Write(context.Background(), websocket.MessageText, messageBytes)
-					p.mu.Lock() // Reacquire the lock after writing
-
-					if err != nil {
-						log.Printf("Failed to forward unsubscribe message to upstream: %v", err)
+					if err = p.sendUpstreamRequest(unsubscribeMsg); err != nil {
+						log.Printf("Failed to send unsubscribe: %v", err)
 					}
+					p.mu.Lock() // Reacquire the lock after writing
 				}
+
+				delete(p.subscriptions, id)
 			}
 		}
 
@@ -156,19 +161,15 @@ func (p *WebSocketProxy) HandleWebSocket(w http.ResponseWriter, r *http.Request)
 			p.handleSubscribe(conn, msg)
 		case "unsubscribe":
 			p.handleUnsubscribe(conn, msg)
+		case "invoice", "invoice.error":
+			p.sendUpstreamRequest(msg)
 		case "ping":
 			// Respond with a pong message
 			pongMsg := map[string]any{
 				"event": "pong",
 			}
-			messageBytes, err := json.Marshal(pongMsg)
-			if err != nil {
-				log.Printf("Failed to marshal pong message: %v", err)
-				continue
-			}
-			err = conn.Write(context.Background(), websocket.MessageText, messageBytes)
-			if err != nil {
-				log.Printf("Failed to send pong message to client: %v", err)
+			if err := p.sendClientResponse(conn, pongMsg); err != nil {
+				log.Printf("Failed to send pong: %v", err)
 			}
 		default:
 			log.Printf("Unknown operation: %s", msg["op"])
@@ -182,89 +183,185 @@ func (p *WebSocketProxy) HandleWebSocket(w http.ResponseWriter, r *http.Request)
 }
 
 func (p *WebSocketProxy) handleSubscribe(conn *websocket.Conn, msg map[string]any) {
-	swapIDs, ok := msg["args"].([]any)
-	if !ok {
+	channel, channelOk := msg["channel"].(string)
+	args, ok := msg["args"].([]any)
+	if !ok || !channelOk {
 		log.Printf("Invalid subscribe message: %v", msg)
 		return
 	}
 
+	var subscribeArgs []any
 	p.mu.Lock()
-	for _, swapID := range swapIDs {
-		id, ok := swapID.(string)
-		if !ok {
-			log.Printf("Invalid swap ID: %v", swapID)
+	for _, arg := range args {
+		var id string
+		switch channel {
+		case "invoice.request":
+			// Extract offer from invoice.request
+			params, ok := arg.(map[string]any)
+			if !ok {
+				log.Printf("Invalid invoice request params: %v", arg)
+				continue
+			}
+			id, ok = params["offer"].(string)
+			if !ok {
+				log.Printf("Invalid offer: %v", arg)
+				continue
+			}
+		case "swap.update":
+			// Extract swap ID from swap.update
+			id, ok = arg.(string)
+			if !ok {
+				log.Printf("Invalid swap ID: %v", arg)
+				continue
+			}
+		default:
+			log.Printf("Unknown channel: %s", channel)
 			continue
 		}
 
-		// Add client to swap ID's subscribers
+		// Add client to offer's subscribers
 		if p.subscribers[id] == nil {
 			p.subscribers[id] = make(map[*websocket.Conn]bool)
+			// Add the arg to the list of args to subscribe to
+			subscribeArgs = append(subscribeArgs, arg)
 		}
 		p.subscribers[id][conn] = true
 
-		// Add swap ID to client's subscriptions
+		// Add subscription data
+		if p.subscriptions[id] == nil {
+			p.subscriptions[id] = &Subscription{
+				channel: channel,
+				arg:     arg,
+			}
+		}
+
+		// Add offer to client's subscriptions
 		p.clients[conn][id] = true
 	}
 	p.mu.Unlock() // Release the lock after modifying the maps
 
-	// Forward subscribe message to upstream
-	if p.upstream != nil {
-		// Marshal the message into JSON ([]byte)
-		messageBytes, err := json.Marshal(msg)
-		if err != nil {
-			log.Printf("Failed to marshal subscribe message: %v", err)
-			return
+	// Only send subscribe message with necessary args to upstream
+	if len(subscribeArgs) > 0 {
+		subscribeMsg := map[string]any{
+			"op":      "subscribe",
+			"channel": channel,
+			"args":    subscribeArgs,
 		}
+		if err := p.sendUpstreamRequest(subscribeMsg); err != nil {
+			log.Printf("Failed to send subscribe: %v", err)
+		}
+	}
 
-		// Write the message to the upstream WebSocket
-		err = p.upstream.Write(context.Background(), websocket.MessageText, messageBytes)
-		if err != nil {
-			log.Printf("Failed to forward subscribe message to upstream: %v", err)
-		}
+	// Send subscribe message to client
+	subscribeMsg := map[string]any{
+		"event":     "subscribe",
+		"channel":   channel,
+		"args":      args,
+		"timestamp": strconv.FormatInt(time.Now().Unix(), 10),
+	}
+	if err := p.sendClientResponse(conn, subscribeMsg); err != nil {
+		log.Printf("Failed to send subscribe: %v", err)
 	}
 }
 
 func (p *WebSocketProxy) handleUnsubscribe(conn *websocket.Conn, msg map[string]any) {
-	swapIDs, ok := msg["args"].([]any)
-	if !ok {
+	// The args can be either a swap ID or an offer
+	channel, channelOk := msg["channel"].(string)
+	args, ok := msg["args"].([]any)
+	if !ok || !channelOk {
 		log.Printf("Invalid unsubscribe message: %v", msg)
 		return
 	}
 
+	var unsubscribeIds []string
 	p.mu.Lock()
-	for _, swapID := range swapIDs {
-		id, ok := swapID.(string)
+	for _, arg := range args {
+		id, ok := arg.(string)
 		if !ok {
-			log.Printf("Invalid swap ID: %v", swapID)
+			log.Printf("Invalid id: %v", arg)
 			continue
 		}
 
-		// Remove client from swap ID's subscribers
+		// Remove client from id's subscribers
 		delete(p.subscribers[id], conn)
 		if len(p.subscribers[id]) == 0 {
 			delete(p.subscribers, id)
+			// If there are no more subscribers for this id,
+			// it's safe to remove it from subscriptions
+			delete(p.subscriptions, id)
+			// Add the id to the list of ids to unsubscribe from
+			unsubscribeIds = append(unsubscribeIds, id)
 		}
 
-		// Remove swap ID from client's subscriptions
+		// Remove id from client's subscriptions
 		delete(p.clients[conn], id)
 	}
 	p.mu.Unlock() // Release the lock after modifying the maps
 
-	// Forward unsubscribe message to upstream
+	// Only send unsubscribe message with necessary args to upstream
+	if len(unsubscribeIds) > 0 {
+		unsubscribeMsg := map[string]any{
+			"op":      "unsubscribe",
+			"channel": channel,
+			"args":    unsubscribeIds,
+		}
+		if err := p.sendUpstreamRequest(unsubscribeMsg); err != nil {
+			log.Printf("Failed to send unsubscribe: %v", err)
+		}
+	}
+
+	// Send unsubscribe message to client
+	unsubscribeMsg := map[string]any{
+		"event":     "unsubscribe",
+		"channel":   channel,
+		"args":      args,
+		"timestamp": strconv.FormatInt(time.Now().Unix(), 10),
+	}
+	if err := p.sendClientResponse(conn, unsubscribeMsg); err != nil {
+		log.Printf("Failed to send unsubscribe: %v", err)
+	}
+}
+
+func (p *WebSocketProxy) sendUpstreamRequest(msg map[string]any) error {
 	if p.upstream != nil {
 		// Marshal the message into JSON ([]byte)
 		messageBytes, err := json.Marshal(msg)
 		if err != nil {
-			log.Printf("Failed to marshal unsubscribe message: %v", err)
-			return
+			return fmt.Errorf("Failed to marshal message: %v", err)
 		}
 
 		// Write the message to the upstream WebSocket
 		err = p.upstream.Write(context.Background(), websocket.MessageText, messageBytes)
 		if err != nil {
-			log.Printf("Failed to forward unsubscribe message to upstream: %v", err)
+			return fmt.Errorf("Failed to forward message to upstream: %v", err)
 		}
 	}
+	return nil
+}
+
+func (p *WebSocketProxy) sendClientResponse(conn *websocket.Conn, msg map[string]any) error {
+	// Marshal the message into JSON ([]byte)
+	messageBytes, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("Failed to marshal message: %v", err)
+	}
+
+	// Write the message to the client WebSocket
+	err = conn.Write(context.Background(), websocket.MessageText, messageBytes)
+	if err != nil {
+		return fmt.Errorf("Failed to send message to client: %v", err)
+	}
+	return nil
+}
+
+func filterSubcriptionArgs(subscriptions map[string]*Subscription, channel string) []any {
+	var filtered []any
+	for _, subscription := range subscriptions {
+		if subscription.channel == channel {
+			filtered = append(filtered, subscription.arg)
+		}
+	}
+	return filtered
 }
 
 func (p *WebSocketProxy) Start() {
@@ -288,30 +385,31 @@ func (p *WebSocketProxy) Start() {
 					if err == nil {
 						log.Println("Reconnected to upstream server successfully")
 
-						// Resubscribe to all swap IDs after reconnection
 						p.mu.Lock()
-						swapIDs := make([]string, 0, len(p.subscribers))
-						for swapID := range p.subscribers {
-							swapIDs = append(swapIDs, swapID)
-						}
+						swapIdArgs := filterSubcriptionArgs(p.subscriptions, "swap.update")
+						offerArgs := filterSubcriptionArgs(p.subscriptions, "invoice.request")
 						p.mu.Unlock()
 
-						if len(swapIDs) > 0 {
+						// Resubscribe to all swaps after reconnection
+						if len(swapIdArgs) > 0 {
 							resubscribeMsg := map[string]any{
 								"op":      "subscribe",
 								"channel": "swap.update",
-								"args":    swapIDs,
+								"args":    swapIdArgs,
 							}
-							messageBytes, err := json.Marshal(resubscribeMsg)
-							if err != nil {
-								log.Printf("Failed to marshal resubscribe message: %v", err)
-							} else {
-								err = p.upstream.Write(context.Background(), websocket.MessageText, messageBytes)
-								if err != nil {
-									log.Printf("Failed to forward resubscribe message to upstream: %v", err)
-								} else {
-									log.Printf("Resubscribed to swap IDs: %v", swapIDs)
-								}
+							if err = p.sendUpstreamRequest(resubscribeMsg); err != nil {
+								log.Printf("Failed to resubscribe to swap updates: %v", err)
+							}
+						}
+						// Resubscribe to all offers after reconnection
+						if len(offerArgs) > 0 {
+							resubscribeMsg := map[string]any{
+								"op":      "subscribe",
+								"channel": "invoice.request",
+								"args":    offerArgs,
+							}
+							if err = p.sendUpstreamRequest(resubscribeMsg); err != nil {
+								log.Printf("Failed to resubscribe to invoice requests: %v", err)
 							}
 						}
 
@@ -334,8 +432,7 @@ func (p *WebSocketProxy) Start() {
 				continue
 			}
 
-			// Extract swap IDs from the message
-			args, ok := msg["args"].([]any)
+			event, ok := msg["event"].(string)
 			if !ok {
 				log.Printf("Invalid upstream message: %v", msg)
 				continue
@@ -344,20 +441,55 @@ func (p *WebSocketProxy) Start() {
 			// Group updates by client
 			clientUpdates := make(map[*websocket.Conn][]map[string]any)
 			p.mu.Lock()
-			for _, arg := range args {
-				swap, ok := arg.(map[string]any)
+			switch event {
+			case "subscribe", "unsubscribe":
+				log.Printf("Received subscribe/unsubscribe response: %s", msg)
+			case "error":
+				log.Printf("Received error response: %s", msg)
+			case "update":
+				args, ok := msg["args"].([]any)
 				if !ok {
+					log.Printf("Invalid upstream message: %v", msg)
 					continue
 				}
-				swapID, ok := swap["id"].(string)
+				for _, arg := range args {
+					swapStatus, ok := arg.(map[string]any)
+					if !ok {
+						continue
+					}
+					id, ok := swapStatus["id"].(string)
+					if !ok {
+						continue
+					}
+					// Add updates to each subscribed client
+					for client := range p.subscribers[id] {
+						clientUpdates[client] = append(clientUpdates[client], swapStatus)
+					}
+				}
+			case "request":
+				args, ok := msg["args"].([]any)
 				if !ok {
+					log.Printf("Invalid upstream message: %v", msg)
 					continue
 				}
-
-				// Add updates to each subscribed client
-				for client := range p.subscribers[swapID] {
-					clientUpdates[client] = append(clientUpdates[client], swap)
+				for _, arg := range args {
+					invoiceRequest, ok := arg.(map[string]any)
+					if !ok {
+						continue
+					}
+					id, ok := invoiceRequest["offer"].(string)
+					if !ok {
+						continue
+					}
+					// Boltz only sends the invoice request to the last subscribed client
+					if len(p.subscribers[id]) > 0 {
+						client := maps.Keys(p.subscribers[id])[0]
+						clientUpdates[client] = append(clientUpdates[client], invoiceRequest)
+					}
 				}
+			default:
+				log.Printf("Unknown response: %s", msg)
+				continue
 			}
 			p.mu.Unlock() // Release the lock after grouping updates
 
