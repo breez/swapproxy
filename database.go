@@ -162,11 +162,13 @@ func NewReverseProxy(config *Config, db *sql.DB) *httputil.ReverseProxy {
 		// Remove Authorization header before forwarding
 		req.Header.Del("Authorization")
 
-		if apiKey == "" || !validateAPIKey(config.CACert, apiKey) {
-			log.Printf("API key validation failed")
-			ctx = context.WithValue(req.Context(), "unauthorized", true)
-			*req = *req.WithContext(ctx)
-			return
+		if config.CACert != nil {
+			if apiKey == "" || !validateAPIKey(config.CACert, apiKey) {
+				log.Printf("API key validation failed")
+				ctx = context.WithValue(req.Context(), "unauthorized", true)
+				*req = *req.WithContext(ctx)
+				return
+			}
 		}
 
 		ctx = context.WithValue(req.Context(), "api_key", apiKey)

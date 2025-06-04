@@ -56,19 +56,22 @@ func LoadConfig() (*Config, error) {
 		dbPath = "requests.db"
 	}
 
-	caCertPEM := os.Getenv("CA_CERT")
-	if caCertPEM == "" {
-		return nil, fmt.Errorf("CA_CERT environment variable is required")
-	}
+	var caCert *x509.Certificate
+	if os.Getenv("DANGEROUS_NO_CA_CERT") != "YES" {
+		caCertPEM := os.Getenv("CA_CERT")
+		if caCertPEM == "" {
+			return nil, fmt.Errorf("CA_CERT environment variable is required")
+		}
 
-	block, err := base64.StdEncoding.DecodeString(caCertPEM)
-	if err != nil {
-		return nil, fmt.Errorf("Could not decode certificate base64 body: %w", err)
-	}
+		block, err := base64.StdEncoding.DecodeString(caCertPEM)
+		if err != nil {
+			return nil, fmt.Errorf("Could not decode certificate base64 body: %w", err)
+		}
 
-	caCert, err := x509.ParseCertificate(block)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse CA certificate: %w", err)
+		caCert, err = x509.ParseCertificate(block)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse CA certificate: %w", err)
+		}
 	}
 
 	httpAdditionalParamsStr := os.Getenv("HTTP_ADDITIONAL_PARAMETERS")
