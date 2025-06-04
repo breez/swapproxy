@@ -16,19 +16,7 @@ import (
 	"path"
 	"strings"
 	"time"
-
-	_ "github.com/mattn/go-sqlite3"
 )
-
-type requestLog struct {
-	Timestamp    time.Time
-	Method       string
-	URI          string
-	Status       int
-	RequestBody  string
-	ResponseBody string
-	APIKey       string
-}
 
 type customTransport struct {
 	base http.RoundTripper
@@ -48,29 +36,6 @@ func (t *customTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	// Forward request to backend only if authorized
 	return t.base.RoundTrip(req)
-}
-
-func InitDatabase(dbPath string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite3", dbPath)
-	if err != nil {
-		return nil, fmt.Errorf("error opening database: %w", err)
-	}
-
-	_, err = db.Exec(`
-        CREATE TABLE IF NOT EXISTS requests (
-            timestamp DATETIME,
-            method TEXT,
-            uri TEXT,
-            status INTEGER,
-            request_body TEXT,
-            response_body TEXT,
-            api_key TEXT
-        )
-    `)
-	if err != nil {
-		return nil, fmt.Errorf("error creating table: %w", err)
-	}
-	return db, nil
 }
 
 func validateAPIKey(cert *x509.Certificate, apiKeyStr string) bool {
@@ -101,7 +66,7 @@ func validateAPIKey(cert *x509.Certificate, apiKeyStr string) bool {
 	return true
 }
 
-func addRequestExtraFees(body []byte) ([]byte, error) {
+func addRequestExtraFees(body []byte, extraFeePercentage float64) ([]byte, error) {
 	var jsonBody map[string]interface{}
 	if err := json.Unmarshal(body, &jsonBody); err != nil {
 		return nil, fmt.Errorf("error unmarshaling JSON: %w", err)
@@ -109,7 +74,7 @@ func addRequestExtraFees(body []byte) ([]byte, error) {
 
 	jsonBody["extraFees"] = map[string]interface{}{
 		"id":         "gm",
-		"percentage": 10,
+		"percentage": extraFeePercentage,
 	}
 
 	modifiedBody, err := json.Marshal(jsonBody)
@@ -120,7 +85,7 @@ func addRequestExtraFees(body []byte) ([]byte, error) {
 	return modifiedBody, nil
 }
 
-func modifyResponsePercentages(data interface{}) interface{} {
+func modifyResponsePercentages(data interface{}, extraFeePercentage float64) interface{} {
 	// The response is a map of currency pairs
 	currencyMap, ok := data.(map[string]interface{})
 	if !ok {
@@ -144,7 +109,7 @@ func modifyResponsePercentages(data interface{}) interface{} {
 			// Check for fees.percentage
 			if fees, ok := currencyMap["fees"].(map[string]interface{}); ok {
 				if percentage, ok := fees["percentage"].(float64); ok {
-					fees["percentage"] = percentage + 10
+					fees["percentage"] = percentage + extraFeePercentage
 				}
 			}
 		}
@@ -153,7 +118,19 @@ func modifyResponsePercentages(data interface{}) interface{} {
 	return data
 }
 
-func NewReverseProxy(config *Config, db *sql.DB) *httputil.ReverseProxy {
+func getExtraFeePercentage(postgres *Database, apiKey string) float64 {
+	fee, err := NewFeeModel(postgres.Pool).GetByPartnerApiKey(apiKey)
+	if err != nil {
+		log.Printf("Error getting extra fee from database: %v", err)
+		// TODO: should we fail?
+	}
+	if fee != nil {
+		return fee.FeePercentage
+	}
+	return 0
+}
+
+func NewReverseProxy(config *Config, sqlite *sql.DB, postgres *Database) *httputil.ReverseProxy {
 	log.Printf("Initializing reverse proxy with backend URL: %s (scheme: %s, host: %s)",
 		config.BackendURL.String(),
 		config.BackendURL.Scheme,
@@ -176,28 +153,6 @@ func NewReverseProxy(config *Config, db *sql.DB) *httputil.ReverseProxy {
 		originalPath := req.URL.Path
 		originalQuery := req.URL.Query()
 		log.Printf("Original path: %s, query: %s", originalPath, originalQuery)
-
-		// Check if this is a request we need to modify
-		if req.Method == "POST" {
-			switch originalPath {
-			case "/v2/swap/submarine", "/v2/swap/reverse", "/v2/swap/chain":
-				if req.Body != nil {
-					reqBody, err := io.ReadAll(req.Body)
-					if err != nil {
-						log.Printf("Error reading request body: %v", err)
-					} else {
-						modifiedBody, err := addRequestExtraFees(reqBody)
-						if err != nil {
-							log.Printf("Error modifying request body: %v", err)
-						} else {
-							req.Body = io.NopCloser(bytes.NewBuffer(modifiedBody))
-							req.ContentLength = int64(len(modifiedBody))
-							log.Printf("Modified request body for %s", originalPath)
-						}
-					}
-				}
-			}
-		}
 
 		for _, param := range config.HTTPAdditionalParams {
 			if len(param) == 2 {
@@ -246,6 +201,29 @@ func NewReverseProxy(config *Config, db *sql.DB) *httputil.ReverseProxy {
 			}
 		}
 
+		// Check if this is a request we need to set extra fees for
+		if req.Method == "POST" {
+			switch originalPath {
+			case "/v2/swap/submarine", "/v2/swap/reverse", "/v2/swap/chain":
+				if req.Body != nil {
+					reqBody, err := io.ReadAll(req.Body)
+					if err != nil {
+						log.Printf("Error reading request body: %v", err)
+					} else {
+						extraFeePercentage := getExtraFeePercentage(postgres, apiKey)
+						modifiedBody, err := addRequestExtraFees(reqBody, extraFeePercentage)
+						if err != nil {
+							log.Printf("Error modifying request body: %v", err)
+						} else {
+							req.Body = io.NopCloser(bytes.NewBuffer(modifiedBody))
+							req.ContentLength = int64(len(modifiedBody))
+							log.Printf("Modified request body for %s", originalPath)
+						}
+					}
+				}
+			}
+		}
+
 		ctx = context.WithValue(req.Context(), "api_key", apiKey)
 		*req = *req.WithContext(ctx)
 
@@ -290,7 +268,7 @@ func NewReverseProxy(config *Config, db *sql.DB) *httputil.ReverseProxy {
 			}
 			res.Body.Close() // Close the original body
 
-			// Check if this is a GET request to one of our target endpoints
+			// Check if this is a response where we need to modify fee percentages
 			if res.Request.Method == "GET" {
 				switch res.Request.URL.Path {
 				case "/v2/swap/submarine", "/v2/swap/reverse", "/v2/swap/chain":
@@ -298,7 +276,9 @@ func NewReverseProxy(config *Config, db *sql.DB) *httputil.ReverseProxy {
 					if err := json.Unmarshal(resBody, &jsonBody); err != nil {
 						log.Printf("Error unmarshaling response JSON: %v", err)
 					} else {
-						modifiedBody := modifyResponsePercentages(jsonBody)
+						apiKey, _ := res.Request.Context().Value("api_key").(string)
+						extraFeePercentage := getExtraFeePercentage(postgres, apiKey)
+						modifiedBody := modifyResponsePercentages(jsonBody, extraFeePercentage)
 						modifiedJSON, err := json.Marshal(modifiedBody)
 						if err != nil {
 							log.Printf("Error marshaling modified response JSON: %v", err)
@@ -322,33 +302,9 @@ func NewReverseProxy(config *Config, db *sql.DB) *httputil.ReverseProxy {
 		if body, ok := res.Request.Context().Value("request_body").([]byte); ok {
 			reqBody = string(body)
 		}
-		LogRequest(db, res.Request, res, elapsed, string(reqBody), string(resBody))
+		LogRequest(sqlite, res.Request, res, elapsed, string(reqBody), string(resBody))
 		return nil
 	}
 
 	return proxy
-}
-
-func LogRequest(db *sql.DB, req *http.Request, res *http.Response, elapsed time.Duration, requestBody, responseBody string) {
-	if res == nil {
-		log.Printf("Error: nil response, using default 500 status code for logging.")
-		res = &http.Response{StatusCode: http.StatusInternalServerError}
-	}
-
-	apiKey := ""
-	if key, ok := req.Context().Value("api_key").(string); ok {
-		apiKey = key
-	}
-
-	_, err := db.Exec(`
-        INSERT INTO requests (timestamp, method, uri, status, request_body, response_body, api_key)
-        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		time.Now(), req.Method, req.URL.String(), res.StatusCode, requestBody, responseBody, apiKey)
-
-	if err != nil {
-		log.Printf("Error logging request: %s", err)
-	}
-
-	log.Printf("%s %s %d %s API Key: %s Request Body: %s, Response Body: %s",
-		req.Method, req.URL.String(), res.StatusCode, elapsed, apiKey, requestBody, responseBody)
 }
