@@ -14,6 +14,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -71,15 +72,15 @@ type ExtraFees struct {
 	Percentage float64 `json:"percentage"`
 }
 
-func addRequestExtraFees(body []byte, extraFeePercentage float64) ([]byte, error) {
+func addRequestExtraFees(body []byte, extraFee Fee) ([]byte, error) {
 	var jsonBody map[string]interface{}
 	if err := json.Unmarshal(body, &jsonBody); err != nil {
 		return nil, fmt.Errorf("error unmarshaling JSON: %w", err)
 	}
 
 	jsonBody["extraFees"] = ExtraFees{
-		ID:         "BreezPartnerExtraFee",
-		Percentage: extraFeePercentage,
+		ID:         strconv.Itoa(extraFee.PartnerID),
+		Percentage: extraFee.FeePercentage,
 	}
 
 	modifiedBody, err := json.Marshal(jsonBody)
@@ -123,16 +124,13 @@ func modifyResponsePercentages(data interface{}, extraFeePercentage float64) int
 	return data
 }
 
-func getExtraFeePercentage(postgres *Database, apiKey string) float64 {
+func getExtraFee(postgres *Database, apiKey string) *Fee {
 	fee, err := NewFeeModel(postgres.Pool).GetByPartnerApiKey(apiKey)
 	if err != nil {
 		log.Printf("Error getting extra fee from database: %v", err)
 		// TODO: should we fail?
 	}
-	if fee != nil {
-		return fee.FeePercentage
-	}
-	return 0
+	return fee
 }
 
 func NewReverseProxy(config *Config, sqlite *sql.DB, postgres *Database) *httputil.ReverseProxy {
@@ -207,7 +205,8 @@ func NewReverseProxy(config *Config, sqlite *sql.DB, postgres *Database) *httput
 		}
 
 		// Check if this is a request we need to set extra fees for
-		if req.Method == "POST" {
+		extraFee := getExtraFee(postgres, apiKey)
+		if extraFee != nil && req.Method == "POST" {
 			switch originalPath {
 			case "/v2/swap/submarine", "/v2/swap/reverse", "/v2/swap/chain":
 				if req.Body != nil {
@@ -215,8 +214,7 @@ func NewReverseProxy(config *Config, sqlite *sql.DB, postgres *Database) *httput
 					if err != nil {
 						log.Printf("Error reading request body: %v", err)
 					} else {
-						extraFeePercentage := getExtraFeePercentage(postgres, apiKey)
-						modifiedBody, err := addRequestExtraFees(reqBody, extraFeePercentage)
+						modifiedBody, err := addRequestExtraFees(reqBody, *extraFee)
 						if err != nil {
 							log.Printf("Error modifying request body: %v", err)
 						} else {
@@ -274,16 +272,16 @@ func NewReverseProxy(config *Config, sqlite *sql.DB, postgres *Database) *httput
 			res.Body.Close() // Close the original body
 
 			// Check if this is a response where we need to modify fee percentages
-			if res.Request.Method == "GET" {
+			apiKey, _ := res.Request.Context().Value("api_key").(string)
+			extraFee := getExtraFee(postgres, apiKey)
+			if extraFee != nil && res.Request.Method == "GET" {
 				switch res.Request.URL.Path {
 				case "/v2/swap/submarine", "/v2/swap/reverse", "/v2/swap/chain":
 					var jsonBody interface{}
 					if err := json.Unmarshal(resBody, &jsonBody); err != nil {
 						log.Printf("Error unmarshaling response JSON: %v", err)
 					} else {
-						apiKey, _ := res.Request.Context().Value("api_key").(string)
-						extraFeePercentage := getExtraFeePercentage(postgres, apiKey)
-						modifiedBody := modifyResponsePercentages(jsonBody, extraFeePercentage)
+						modifiedBody := modifyResponsePercentages(jsonBody, extraFee.FeePercentage)
 						modifiedJSON, err := json.Marshal(modifiedBody)
 						if err != nil {
 							log.Printf("Error marshaling modified response JSON: %v", err)
