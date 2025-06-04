@@ -66,15 +66,20 @@ func validateAPIKey(cert *x509.Certificate, apiKeyStr string) bool {
 	return true
 }
 
+type ExtraFees struct {
+	ID         string  `json:"id"`
+	Percentage float64 `json:"percentage"`
+}
+
 func addRequestExtraFees(body []byte, extraFeePercentage float64) ([]byte, error) {
 	var jsonBody map[string]interface{}
 	if err := json.Unmarshal(body, &jsonBody); err != nil {
 		return nil, fmt.Errorf("error unmarshaling JSON: %w", err)
 	}
 
-	jsonBody["extraFees"] = map[string]interface{}{
-		"id":         "gm",
-		"percentage": extraFeePercentage,
+	jsonBody["extraFees"] = ExtraFees{
+		ID:         "BreezPartnerExtraFee",
+		Percentage: extraFeePercentage,
 	}
 
 	modifiedBody, err := json.Marshal(jsonBody)
