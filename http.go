@@ -224,11 +224,12 @@ func NewReverseProxy(config *Config, sqlite *sql.DB, postgres *Database) *httput
 							if err != nil {
 								log.Printf("Error modifying request body: %v", err)
 							} else {
-								req.Body = io.NopCloser(bytes.NewBuffer(modifiedBody))
-								req.ContentLength = int64(len(modifiedBody))
+								reqBody = modifiedBody
 								log.Printf("Modified request body for %s", originalPath)
 							}
 						}
+						req.Body = io.NopCloser(bytes.NewBuffer(reqBody))
+						req.ContentLength = int64(len(reqBody))
 					}
 				}
 			}
