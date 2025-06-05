@@ -270,7 +270,7 @@ func NewReverseProxy(config *Config, sqlite *sql.DB, postgres *Database) *httput
 
 		if res.StatusCode < 200 || res.StatusCode >= 300 {
 			log.Printf("Received non-success status code: %d", res.StatusCode)
-			return fmt.Errorf("Response with non-success status code: %d", res.StatusCode)
+			return nil
 		}
 
 		var resBody []byte
