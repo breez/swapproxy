@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -115,7 +116,11 @@ func modifyResponsePercentages(data interface{}, extraFeePercentage float64) int
 			// Check for fees.percentage
 			if fees, ok := currencyMap["fees"].(map[string]interface{}); ok {
 				if percentage, ok := fees["percentage"].(float64); ok {
-					fees["percentage"] = percentage + extraFeePercentage
+					// We assume both percentages may only have 2 decimal places
+					percentageInt := int(math.Round(percentage * 100))
+					extraFeeInt := int(math.Round(extraFeePercentage * 100))
+					resultInt := percentageInt + extraFeeInt
+					fees["percentage"] = float64(resultInt) / 100
 				}
 			}
 		}
