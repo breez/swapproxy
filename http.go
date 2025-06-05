@@ -205,8 +205,7 @@ func NewReverseProxy(config *Config, sqlite *sql.DB, postgres *Database) *httput
 		}
 
 		// Check if this is a request we need to set extra fees for
-		extraFee := getExtraFee(postgres, apiKey)
-		if extraFee != nil && req.Method == "POST" {
+		if req.Method == "POST" {
 			switch originalPath {
 			case "/v2/swap/submarine", "/v2/swap/reverse", "/v2/swap/chain":
 				if req.Body != nil {
@@ -214,13 +213,16 @@ func NewReverseProxy(config *Config, sqlite *sql.DB, postgres *Database) *httput
 					if err != nil {
 						log.Printf("Error reading request body: %v", err)
 					} else {
-						modifiedBody, err := addRequestExtraFees(reqBody, *extraFee)
-						if err != nil {
-							log.Printf("Error modifying request body: %v", err)
-						} else {
-							req.Body = io.NopCloser(bytes.NewBuffer(modifiedBody))
-							req.ContentLength = int64(len(modifiedBody))
-							log.Printf("Modified request body for %s", originalPath)
+						extraFee := getExtraFee(postgres, apiKey)
+						if extraFee != nil {
+							modifiedBody, err := addRequestExtraFees(reqBody, *extraFee)
+							if err != nil {
+								log.Printf("Error modifying request body: %v", err)
+							} else {
+								req.Body = io.NopCloser(bytes.NewBuffer(modifiedBody))
+								req.ContentLength = int64(len(modifiedBody))
+								log.Printf("Modified request body for %s", originalPath)
+							}
 						}
 					}
 				}
@@ -261,6 +263,11 @@ func NewReverseProxy(config *Config, sqlite *sql.DB, postgres *Database) *httput
 			return fmt.Errorf("nil response")
 		}
 
+		if res.StatusCode < 200 || res.StatusCode >= 300 {
+			log.Printf("Received non-success status code: %d", res.StatusCode)
+			return fmt.Errorf("Response with non-success status code: %d", res.StatusCode)
+		}
+
 		var resBody []byte
 		if res.Body != nil {
 			var err error
@@ -272,22 +279,24 @@ func NewReverseProxy(config *Config, sqlite *sql.DB, postgres *Database) *httput
 			res.Body.Close() // Close the original body
 
 			// Check if this is a response where we need to modify fee percentages
-			apiKey, _ := res.Request.Context().Value("api_key").(string)
-			extraFee := getExtraFee(postgres, apiKey)
-			if extraFee != nil && res.Request.Method == "GET" {
+			if res.Request.Method == "GET" {
 				switch res.Request.URL.Path {
 				case "/v2/swap/submarine", "/v2/swap/reverse", "/v2/swap/chain":
 					var jsonBody interface{}
 					if err := json.Unmarshal(resBody, &jsonBody); err != nil {
 						log.Printf("Error unmarshaling response JSON: %v", err)
 					} else {
-						modifiedBody := modifyResponsePercentages(jsonBody, extraFee.FeePercentage)
-						modifiedJSON, err := json.Marshal(modifiedBody)
-						if err != nil {
-							log.Printf("Error marshaling modified response JSON: %v", err)
-						} else {
-							resBody = modifiedJSON
-							log.Printf("Modified percentage values in response for %s", res.Request.URL.Path)
+						apiKey, _ := res.Request.Context().Value("api_key").(string)
+						extraFee := getExtraFee(postgres, apiKey)
+						if extraFee != nil {
+							modifiedBody := modifyResponsePercentages(jsonBody, extraFee.FeePercentage)
+							modifiedJSON, err := json.Marshal(modifiedBody)
+							if err != nil {
+								log.Printf("Error marshaling modified response JSON: %v", err)
+							} else {
+								resBody = modifiedJSON
+								log.Printf("Modified percentage values in response for %s", res.Request.URL.Path)
+							}
 						}
 					}
 				}
