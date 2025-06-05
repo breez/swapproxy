@@ -15,17 +15,24 @@ func main() {
 	log.Printf("Loaded configuration - Backend URL: %s, Port: %s, DB Path: %s",
 		config.BackendURL.String(),
 		config.Port,
-		config.DBPath)
+		config.SQLiteDBPath)
 
-	db, err := InitDatabase(config.DBPath)
+	sqlite, err := InitSQLiteDatabase(config.SQLiteDBPath)
 	if err != nil {
-		log.Fatal("Error initializing database:", err)
+		log.Fatal("Error initializing SQLite database:", err)
 	}
-	defer db.Close()
-	log.Printf("Database initialized successfully")
+	defer sqlite.Close()
+	log.Printf("SQLite Database initialized successfully")
+
+	postgres, err := InitPostgresDatabase(config.PostgresURL)
+	if err != nil {
+		log.Fatal("Error initializing Postgres database:", err)
+	}
+	defer postgres.Close()
+	log.Printf("Postgres Database connection initialized successfully")
 
 	// Set up HTTP reverse proxy
-	proxy := NewReverseProxy(config, db)
+	proxy := NewReverseProxy(config, sqlite, postgres)
 	log.Printf("Reverse proxy created")
 
 	// Set up WebSocket proxy

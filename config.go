@@ -16,7 +16,8 @@ type Config struct {
 	BackendURL                *url.URL
 	WebSocketBackendURL       *url.URL
 	Port                      string
-	DBPath                    string
+	SQLiteDBPath              string
+	PostgresURL               string
 	CACert                    *x509.Certificate
 	HTTPAdditionalParams      [][2]string
 	WebSocketAdditionalParams [][2]string
@@ -51,9 +52,14 @@ func LoadConfig() (*Config, error) {
 		port = "8080"
 	}
 
-	dbPath := os.Getenv("DB_PATH")
-	if dbPath == "" {
-		dbPath = "requests.db"
+	sqliteDBPath := os.Getenv("SQLITE_DB_PATH")
+	if sqliteDBPath == "" {
+		sqliteDBPath = "requests.db"
+	}
+
+	postgresURL := os.Getenv("POSTGRES_URL")
+	if postgresURL == "" {
+		return nil, fmt.Errorf("POSTGRES_URL environment variable is required")
 	}
 
 	var caCert *x509.Certificate
@@ -96,7 +102,8 @@ func LoadConfig() (*Config, error) {
 		BackendURL:                backendURL,
 		WebSocketBackendURL:       webSocketBackendURL,
 		Port:                      port,
-		DBPath:                    dbPath,
+		SQLiteDBPath:              sqliteDBPath,
+		PostgresURL:               postgresURL,
 		CACert:                    caCert,
 		HTTPAdditionalParams:      httpAdditionalParams,
 		WebSocketAdditionalParams: websocketAdditionalParams,
