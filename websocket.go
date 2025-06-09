@@ -73,7 +73,7 @@ func (p *WebSocketProxy) HandleWebSocket(w http.ResponseWriter, r *http.Request)
 	}
 	defer conn.CloseNow()
 
-	authHeader := r.Header.Get("Authorization")
+	authHeader := r.Header.Get("Sec-WebSocket-Protocol")
 	apiKey := ""
 	if strings.HasPrefix(authHeader, "Bearer ") {
 		apiKey = strings.TrimPrefix(authHeader, "Bearer ")
