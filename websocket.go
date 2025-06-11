@@ -90,17 +90,11 @@ func (p *WebSocketProxy) HandleWebSocket(w http.ResponseWriter, r *http.Request)
 		}
 
 		// Parse the message
-		var msg map[string]any
-		if err := json.Unmarshal(message, &msg); err != nil {
-			log.Printf("Failed to parse initial message: %v", err)
-			conn.CloseNow()
-			return
+		var apiKeyMsg struct {
+			ApiKey string `json:"apikey"`
 		}
-
-		// Extract API key from the message
-		apiKey, ok := msg["apikey"].(string)
-		if !ok {
-			log.Printf("No API key provided in initial message")
+		if err := json.Unmarshal(message, &apiKeyMsg); err != nil {
+			log.Printf("Failed to parse initial message: %v", err)
 			// Send error message before closing
 			errMsg := map[string]any{
 				"event": "error",
@@ -111,9 +105,10 @@ func (p *WebSocketProxy) HandleWebSocket(w http.ResponseWriter, r *http.Request)
 			conn.CloseNow()
 			return
 		}
-		log.Printf("Received API key (length): %d", len(apiKey))
 
-		if apiKey == "" || !validateAPIKey(p.config.CACert, apiKey) {
+		log.Printf("Received API key (length): %d", len(apiKeyMsg.ApiKey))
+
+		if !validateAPIKey(p.config.CACert, apiKeyMsg.ApiKey) {
 			log.Printf("WebSocket connection rejected: invalid API key")
 			// Send error message and close connection
 			errMsg := map[string]any{
