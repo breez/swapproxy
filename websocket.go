@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"net/url"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -73,15 +73,42 @@ func (p *WebSocketProxy) HandleWebSocket(w http.ResponseWriter, r *http.Request)
 	}
 	defer conn.CloseNow()
 
-	authHeader := r.Header.Get("Authorization")
-	apiKey := ""
-	if strings.HasPrefix(authHeader, "Bearer ") {
-		apiKey = strings.TrimPrefix(authHeader, "Bearer ")
-		log.Printf("Extracted API key (length): %d", len(apiKey))
-	}
-
 	if p.config.CACert != nil {
-		if apiKey == "" || !validateAPIKey(p.config.CACert, apiKey) {
+		apiKeyCtx, apiKeyCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer apiKeyCancel()
+
+		// Read the first message to get the API key
+		_, message, err := conn.Read(apiKeyCtx)
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				log.Printf("Client did not send API key within 2 seconds")
+			} else {
+				log.Printf("Failed to read initial message: %v", err)
+			}
+			conn.CloseNow()
+			return
+		}
+
+		// Parse the message
+		var apiKeyMsg struct {
+			ApiKey string `json:"apikey"`
+		}
+		if err := json.Unmarshal(message, &apiKeyMsg); err != nil {
+			log.Printf("Failed to parse initial message: %v", err)
+			// Send error message before closing
+			errMsg := map[string]any{
+				"event": "error",
+				"error": "no API key provided",
+			}
+			messageBytes, _ := json.Marshal(errMsg)
+			conn.Write(context.Background(), websocket.MessageText, messageBytes)
+			conn.CloseNow()
+			return
+		}
+
+		log.Printf("Received API key (length): %d", len(apiKeyMsg.ApiKey))
+
+		if !validateAPIKey(p.config.CACert, apiKeyMsg.ApiKey) {
 			log.Printf("WebSocket connection rejected: invalid API key")
 			// Send error message and close connection
 			errMsg := map[string]any{
