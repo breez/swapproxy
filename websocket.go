@@ -211,6 +211,10 @@ func (p *WebSocketProxy) HandleWebSocket(w http.ResponseWriter, r *http.Request)
 	}
 }
 
+func currentTimestampMillis() string {
+	return strconv.FormatInt(time.Now().UnixMilli(), 10)
+}
+
 func (p *WebSocketProxy) handleSubscribe(conn *websocket.Conn, msg map[string]any) {
 	channel, channelOk := msg["channel"].(string)
 	args, ok := msg["args"].([]any)
@@ -286,8 +290,22 @@ func (p *WebSocketProxy) handleSubscribe(conn *websocket.Conn, msg map[string]an
 		"event":     "subscribe",
 		"channel":   channel,
 		"args":      args,
-		"timestamp": strconv.FormatInt(time.Now().Unix(), 10),
+		"timestamp": currentTimestampMillis(),
 	}
+
+	// For invoice.request channel, extract just the offer strings to match the upstream format
+	if channel == "invoice.request" {
+		var offers []string
+		for _, arg := range args {
+			if params, ok := arg.(map[string]any); ok {
+				if offer, ok := params["offer"].(string); ok {
+					offers = append(offers, offer)
+				}
+			}
+		}
+		subscribeMsg["args"] = offers
+	}
+
 	if err := p.sendClientResponse(conn, subscribeMsg); err != nil {
 		log.Printf("Failed to send subscribe: %v", err)
 	}
@@ -344,7 +362,7 @@ func (p *WebSocketProxy) handleUnsubscribe(conn *websocket.Conn, msg map[string]
 		"event":     "unsubscribe",
 		"channel":   channel,
 		"args":      args,
-		"timestamp": strconv.FormatInt(time.Now().Unix(), 10),
+		"timestamp": currentTimestampMillis(),
 	}
 	if err := p.sendClientResponse(conn, unsubscribeMsg); err != nil {
 		log.Printf("Failed to send unsubscribe: %v", err)
@@ -529,7 +547,7 @@ func (p *WebSocketProxy) Start() {
 					"event":     msg["event"],
 					"channel":   msg["channel"],
 					"args":      updates,
-					"timestamp": strconv.FormatInt(time.Now().Unix(), 10),
+					"timestamp": currentTimestampMillis(),
 				}
 
 				// Marshal the message into JSON ([]byte)
