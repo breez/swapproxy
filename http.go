@@ -219,7 +219,7 @@ func NewReverseProxy(config *Config, sqlite *sql.DB, postgres *Database) *httput
 						log.Printf("Error reading request body: %v", err)
 					} else {
 						extraFee := getExtraFee(postgres, apiKey)
-						if extraFee != nil {
+						if extraFee != nil && extraFee.FeePercentage > 0 {
 							modifiedBody, err := addRequestExtraFees(reqBody, *extraFee)
 							if err != nil {
 								log.Printf("Error modifying request body: %v", err)
@@ -294,7 +294,7 @@ func NewReverseProxy(config *Config, sqlite *sql.DB, postgres *Database) *httput
 					} else {
 						apiKey, _ := res.Request.Context().Value("api_key").(string)
 						extraFee := getExtraFee(postgres, apiKey)
-						if extraFee != nil {
+						if extraFee != nil && extraFee.FeePercentage > 0 {
 							modifiedBody := modifyResponsePercentages(jsonBody, extraFee.FeePercentage)
 							modifiedJSON, err := json.Marshal(modifiedBody)
 							if err != nil {
