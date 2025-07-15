@@ -3,6 +3,8 @@ package main
 import (
 	"log"
 	"net/http"
+
+	"github.com/rs/cors"
 )
 
 func main() {
@@ -38,11 +40,16 @@ func main() {
 	// Set up WebSocket proxy
 	wsProxy := NewWebSocketProxy(config.WebSocketBackendURL.String(), config)
 	wsProxy.Start()
-	http.HandleFunc("/v2/ws", wsProxy.HandleWebSocket)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v2/ws", wsProxy.HandleWebSocket)
 
 	// Set up HTTP handler
-	http.Handle("/", proxy)
+	mux.Handle("/", proxy)
+
+	// Set up CORS
+	handler := cors.Default().Handler(mux)
 
 	log.Printf("Starting to listen on port %s", config.Port)
-	log.Fatal(http.ListenAndServe(":"+config.Port, nil))
+	log.Fatal(http.ListenAndServe(":"+config.Port, handler))
 }
