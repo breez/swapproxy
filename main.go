@@ -41,15 +41,12 @@ func main() {
 	wsProxy := NewWebSocketProxy(config.WebSocketBackendURL.String(), config)
 	wsProxy.Start()
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v2/ws", wsProxy.HandleWebSocket)
+	http.HandleFunc("/v2/ws", wsProxy.HandleWebSocket)
 
 	// Set up HTTP handler
-	mux.Handle("/", proxy)
-
-	// Set up CORS
-	handler := cors.Default().Handler(mux)
+	corsHandler := cors.Default().Handler(proxy)
+	http.Handle("/", corsHandler)
 
 	log.Printf("Starting to listen on port %s", config.Port)
-	log.Fatal(http.ListenAndServe(":"+config.Port, handler))
+	log.Fatal(http.ListenAndServe(":"+config.Port, nil))
 }
