@@ -66,7 +66,11 @@ func (p *WebSocketProxy) connectToUpstream() error {
 }
 
 func (p *WebSocketProxy) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
-	conn, err := websocket.Accept(w, r, nil)
+	// Create options to accept connections from any origin
+    options := &websocket.AcceptOptions{
+        OriginPatterns: []string{"*"}, // Allow all origins
+    }
+	conn, err := websocket.Accept(w, r, options)
 	if err != nil {
 		log.Printf("WebSocket upgrade error: %v", err)
 		return
