@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 
@@ -37,7 +38,7 @@ func (db *Database) Close() {
 
 type Fee struct {
 	PartnerID     int
-	FeePercentage float64
+	FeePercentage *float64
 }
 
 type FeeModel struct {
@@ -51,17 +52,25 @@ func NewFeeModel(db *pgxpool.Pool) *FeeModel {
 func (m *FeeModel) GetByPartnerApiKey(api_key string) (*Fee, error) {
 	query := `SELECT p.id, fs.fee_percentage
 				FROM partners p
-				JOIN fee_settings fs ON p.id = fs.partner_id
+				LEFT JOIN fee_settings fs ON p.id = fs.partner_id
 				WHERE p.api_key = $1;`
 	row := m.DB.QueryRow(context.Background(), query, api_key)
 
 	var fee Fee
-	err := row.Scan(&fee.PartnerID, &fee.FeePercentage)
+	var feePercentage sql.NullFloat64
+	err := row.Scan(&fee.PartnerID, &feePercentage)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
+	}
+
+	// Set FeePercentage to nil if the value is NULL in the database
+	if feePercentage.Valid {
+		fee.FeePercentage = &feePercentage.Float64
+	} else {
+		fee.FeePercentage = nil
 	}
 
 	return &fee, nil

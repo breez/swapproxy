@@ -69,8 +69,8 @@ func validateAPIKey(cert *x509.Certificate, apiKeyStr string) bool {
 }
 
 type ExtraFees struct {
-	ID         string  `json:"id"`
-	Percentage float64 `json:"percentage"`
+	ID         string   `json:"id"`
+	Percentage *float64 `json:"percentage,omitempty"`
 }
 
 func addRequestExtraFees(body []byte, extraFee Fee) ([]byte, error) {
@@ -79,10 +79,16 @@ func addRequestExtraFees(body []byte, extraFee Fee) ([]byte, error) {
 		return nil, fmt.Errorf("error unmarshaling JSON: %w", err)
 	}
 
-	jsonBody["extraFees"] = ExtraFees{
-		ID:         strconv.Itoa(extraFee.PartnerID),
-		Percentage: extraFee.FeePercentage,
+	extraFees := ExtraFees{
+		ID: strconv.Itoa(extraFee.PartnerID),
 	}
+
+	// Set percentage if it exists and is greater than 0
+	if extraFee.FeePercentage != nil && *extraFee.FeePercentage > 0 {
+		extraFees.Percentage = extraFee.FeePercentage
+	}
+
+	jsonBody["extraFees"] = extraFees
 
 	modifiedBody, err := json.Marshal(jsonBody)
 	if err != nil {
@@ -219,7 +225,7 @@ func NewReverseProxy(config *Config, sqlite *sql.DB, postgres *Database) *httput
 						log.Printf("Error reading request body: %v", err)
 					} else {
 						extraFee := getExtraFee(postgres, apiKey)
-						if extraFee != nil && extraFee.FeePercentage > 0 {
+						if extraFee != nil {
 							modifiedBody, err := addRequestExtraFees(reqBody, *extraFee)
 							if err != nil {
 								log.Printf("Error modifying request body: %v", err)
@@ -227,6 +233,8 @@ func NewReverseProxy(config *Config, sqlite *sql.DB, postgres *Database) *httput
 								reqBody = modifiedBody
 								log.Printf("Modified request body for %s", originalPath)
 							}
+						} else {
+							log.Printf("No partner id found for api key %s", apiKey)
 						}
 						req.Body = io.NopCloser(bytes.NewBuffer(reqBody))
 						req.ContentLength = int64(len(reqBody))
@@ -294,8 +302,8 @@ func NewReverseProxy(config *Config, sqlite *sql.DB, postgres *Database) *httput
 					} else {
 						apiKey, _ := res.Request.Context().Value("api_key").(string)
 						extraFee := getExtraFee(postgres, apiKey)
-						if extraFee != nil && extraFee.FeePercentage > 0 {
-							modifiedBody := modifyResponsePercentages(jsonBody, extraFee.FeePercentage)
+						if extraFee != nil && extraFee.FeePercentage != nil && *extraFee.FeePercentage > 0 {
+							modifiedBody := modifyResponsePercentages(jsonBody, *extraFee.FeePercentage)
 							modifiedJSON, err := json.Marshal(modifiedBody)
 							if err != nil {
 								log.Printf("Error marshaling modified response JSON: %v", err)
