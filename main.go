@@ -44,5 +44,5 @@ func main() {
 	http.Handle("/", proxy)
 
 	log.Printf("Starting to listen on port %s", config.Port)
-	log.Fatal(http.ListenAndServe(":"+config.Port, nil))
+	log.Fatal(http.ListenAndServe("0.0.0.0:"+config.Port, nil))
 }
